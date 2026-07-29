@@ -1,0 +1,20 @@
+name = "lottery-api-cloudflare"
+main = "src/index.ts"
+compatibility_date = "2026-07-28"
+workers_dev = true
+
+[assets]
+directory = "./frontend"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+PUBLIC_BASE_URL = "https://lottery-api-cloudflare.zorthiha-neo.workers.dev"
+PRIMARY_PROVIDER = "sanook"
+POLL_START_TIME = "14:30"
+POLL_END_TIME = "18:00"
+POLL_FREQUENCY_SECONDS = "15"
+CONSENSUS_THRESHOLD = "2"
+
+[triggers]
+crons = ["* * * * *"]

@@ -1,0 +1,314 @@
+openapi: 3.1.0
+info:
+  title: LotteryApiCloudflare API
+  version: 1.0.0
+  description: Thai lottery result API with Sanook-first live updates and support-provider confirmation.
+servers:
+  - url: https://lottery-api-cloudflare.zorthiha-neo.workers.dev
+security:
+  - ApiKeyAuth: []
+paths:
+  /v1/health:
+    get:
+      summary: Service health
+      security: []
+      responses:
+        "200":
+          description: API, database, and worker health.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /v1/results/latest:
+    get:
+      summary: Latest draw result
+      responses:
+        "200":
+          description: Latest result envelope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResultEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/results/{drawDate}:
+    get:
+      summary: Result by draw date
+      parameters:
+        - $ref: "#/components/parameters/DrawDate"
+      responses:
+        "200":
+          description: Result envelope for the requested draw date.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResultEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/results/{drawDate}/audit:
+    get:
+      summary: Provider poll audit
+      parameters:
+        - $ref: "#/components/parameters/DrawDate"
+      responses:
+        "200":
+          description: Provider attempts and parsed row snapshots.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api_version, draw_date, audit]
+                properties:
+                  api_version:
+                    const: v1
+                  draw_date:
+                    type: string
+                    format: date
+                  audit:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditRow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  parameters:
+    DrawDate:
+      name: drawDate
+      in: path
+      required: true
+      schema:
+        type: string
+        format: date
+        pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+      example: "2026-07-16"
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+  schemas:
+    ProviderName:
+      type: string
+      enum: [sanook, kapook, myhora]
+    DrawStatus:
+      type: string
+      enum: [pending, polling, live, provisional, confirmed, conflict, failed, not_found]
+    RowStatus:
+      type: string
+      enum: [live, provisional, confirmed, conflict]
+    ResultEnvelope:
+      type: object
+      required:
+        - api_version
+        - draw_date
+        - timezone
+        - status
+        - revision
+        - last_poll_at
+        - primary_provider
+        - confidence
+        - categories
+        - providers
+        - updated_at
+      properties:
+        api_version:
+          const: v1
+        draw_date:
+          type: [string, "null"]
+          format: date
+        timezone:
+          const: Asia/Bangkok
+        status:
+          $ref: "#/components/schemas/DrawStatus"
+        revision:
+          type: integer
+          minimum: 0
+        last_poll_at:
+          type: [string, "null"]
+          format: date-time
+        primary_provider:
+          $ref: "#/components/schemas/ProviderName"
+        confidence:
+          type: object
+          required: [first_provider, confirming_providers, consensus_count, required_consensus]
+          properties:
+            first_provider:
+              anyOf:
+                - $ref: "#/components/schemas/ProviderName"
+                - type: "null"
+            confirming_providers:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProviderName"
+            consensus_count:
+              type: integer
+              minimum: 0
+            required_consensus:
+              type: integer
+              minimum: 1
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResultCategory"
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderStatus"
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+    ResultCategory:
+      type: object
+      required: [id, label, prize_amount, expected_count, received_count, numbers]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        prize_amount:
+          type: integer
+        expected_count:
+          type: integer
+        received_count:
+          type: integer
+        numbers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResultNumber"
+    ResultNumber:
+      type: object
+      required: [number, source_provider, all_seen_providers, first_seen_at, status]
+      properties:
+        number:
+          type: string
+        source_provider:
+          $ref: "#/components/schemas/ProviderName"
+        all_seen_providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderName"
+        first_seen_at:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/RowStatus"
+    ProviderStatus:
+      type: object
+      required: [provider, status, row_count, is_complete, source_date, last_checked_at, message]
+      properties:
+        provider:
+          $ref: "#/components/schemas/ProviderName"
+        status:
+          type: string
+          enum: [complete, partial, error, not_run]
+        row_count:
+          type: integer
+          minimum: 0
+        is_complete:
+          type: boolean
+        source_date:
+          type: [string, "null"]
+          format: date
+        last_checked_at:
+          type: [string, "null"]
+          format: date-time
+        message:
+          type: [string, "null"]
+    AuditRow:
+      type: object
+      properties:
+        minute_mark:
+          type: string
+          format: date-time
+        provider:
+          anyOf:
+            - $ref: "#/components/schemas/ProviderName"
+            - type: "null"
+        source_url:
+          type: [string, "null"]
+          format: uri
+        http_status:
+          type: [integer, "null"]
+        source_date:
+          type: [string, "null"]
+          format: date
+        row_count:
+          type: [integer, "null"]
+        is_complete:
+          type: [boolean, "null"]
+        result_signature:
+          type: [string, "null"]
+        message:
+          type: [string, "null"]
+        duration_ms:
+          type: [integer, "null"]
+        raw_hash:
+          type: [string, "null"]
+        checked_at:
+          type: [string, "null"]
+          format: date-time
+        parsed_rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParsedRow"
+    ParsedRow:
+      type: object
+      required: [prize_category, label, prize_amount, number]
+      properties:
+        prize_category:
+          type: string
+        label:
+          type: string
+        prize_amount:
+          type: integer
+        number:
+          type: string
+    ResultUpdatedWebhook:
+      type: object
+      required: [event_type, delivered_at, data]
+      properties:
+        event_type:
+          const: result.updated
+        delivered_at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          required: [draw_date, revision, status, result_url]
+          properties:
+            draw_date:
+              type: string
+              format: date
+            revision:
+              type: integer
+            status:
+              $ref: "#/components/schemas/DrawStatus"
+            result_url:
+              type: string
+              format: uri
+    HealthResponse:
+      type: object
+      required: [ok, api_version, service, database, worker, worker_policy]
+      properties:
+        ok:
+          type: boolean
+        api_version:
+          const: v1
+        service:
+          const: LotteryApiCloudflare
+        database:
+          type: string
+        worker:
+          type: object
+        worker_policy:
+          type: object

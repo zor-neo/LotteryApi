@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lottery API Developer Console</title>
+    <link rel="stylesheet" href="/console/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <h1>Lottery API Developer Console</h1>
+          <p id="summary">Connect to the live Worker API.</p>
+        </div>
+        <div class="status-pill" id="connectionStatus">Idle</div>
+      </header>
+
+      <section class="toolbar" aria-label="API settings">
+        <label>
+          API base URL
+          <input id="apiBaseUrl" type="url" value="https://lottery-api-cloudflare.zorthiha-neo.workers.dev" />
+        </label>
+        <label>
+          API key
+          <input id="apiKey" type="password" placeholder="x-api-key" autocomplete="off" />
+        </label>
+        <label>
+          Draw date
+          <input id="drawDate" type="date" />
+        </label>
+        <label>
+          Poll seconds
+          <input id="pollSeconds" type="number" min="5" max="60" value="10" />
+        </label>
+        <button id="refreshNow" type="button">Refresh</button>
+        <button id="togglePolling" type="button">Start polling</button>
+      </section>
+
+      <section class="metrics" aria-label="Live API metrics">
+        <div>
+          <span>Status</span>
+          <strong id="drawStatus">-</strong>
+        </div>
+        <div>
+          <span>Revision</span>
+          <strong id="revision">0</strong>
+        </div>
+        <div>
+          <span>Rows</span>
+          <strong id="rowCount">0/173</strong>
+        </div>
+        <div>
+          <span>Last poll</span>
+          <strong id="lastPoll">-</strong>
+        </div>
+        <div>
+          <span>Primary</span>
+          <strong id="primaryProvider">sanook</strong>
+        </div>
+      </section>
+
+      <section class="providers" aria-label="Provider states" id="providers"></section>
+
+      <section class="result-layout">
+        <div class="result-main">
+          <div class="section-title">
+            <h2>Live Prize Output</h2>
+            <span id="revisionNote">Waiting for data</span>
+          </div>
+          <div id="categories" class="categories"></div>
+        </div>
+        <aside class="audit-panel">
+          <div class="section-title">
+            <h2>Consumer Log</h2>
+            <button id="clearLog" type="button">Clear</button>
+          </div>
+          <ol id="eventLog" class="event-log"></ol>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/console/main.js" type="module"></script>
+  </body>
+</html>
