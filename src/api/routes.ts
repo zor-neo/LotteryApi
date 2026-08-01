@@ -1,7 +1,7 @@
 import { Env } from "../env.js";
 import { query } from "../db/sql.js";
 import { getBangkokParts } from "../lib/time.js";
-import { buildResultEnvelope, getDraw, getLatestDraw, getPollingConfig } from "../domain/repository.js";
+import { ApiResultEnvelope, buildResultEnvelope, getDraw, getLatestDraw, getPollingConfig, getSchemaReadiness } from "../domain/repository.js";
 import { refreshIfNeeded, runPoll } from "../domain/poller.js";
 import { requireApiKey } from "./auth.js";
 import { error, json } from "./responses.js";
@@ -17,6 +17,7 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
   if (request.method === "GET" && path === "/") {
     return json({
       api_version: "v1",
+      build: "2026-08-01-live-diagnostics",
       service: "LotteryApiCloudflare",
       runtime: "cloudflare-workers",
       health_url: `${url.origin}/v1/health`,
@@ -46,15 +47,15 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
   if (request.method === "GET" && path === "/v1/results/latest") {
     const now = getBangkokParts();
-    await refreshIfNeeded(env, now.date);
-    return json(await buildResultEnvelope(env, await getLatestDraw(env)));
+    const refreshError = await tryRefresh(env, now.date);
+    return json(withRefreshError(await buildResultEnvelope(env, await getLatestDraw(env)), refreshError));
   }
 
   const resultMatch = path.match(/^\/v1\/results\/(\d{4}-\d{2}-\d{2})$/);
   if (request.method === "GET" && resultMatch) {
     const drawDate = resultMatch[1];
-    await refreshIfNeeded(env, drawDate);
-    return json(await buildResultEnvelope(env, await getDraw(env, drawDate)));
+    const refreshError = await tryRefresh(env, drawDate);
+    return json(withRefreshError(await buildResultEnvelope(env, await getDraw(env, drawDate)), refreshError));
   }
 
   const auditMatch = path.match(/^\/v1\/results\/(\d{4}-\d{2}-\d{2})\/audit$/);
@@ -80,12 +81,15 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 async function health(env: Env): Promise<Response> {
   const [db] = await query<{ ok: number }>(env, "SELECT 1 AS ok").catch(() => [{ ok: 0 }]);
   const config = await getPollingConfig(env);
+  const schema = db?.ok === 1 ? await getSchemaReadiness(env) : null;
   return json({
     ok: db?.ok === 1,
     api_version: "v1",
+    build: "2026-08-01-live-diagnostics",
     service: "LotteryApiCloudflare",
     runtime: "cloudflare-workers",
     database: db?.ok === 1 ? "ok" : "error",
+    schema,
     worker_policy: {
       timezone: config.timezone,
       start_time: config.start_time,
@@ -95,6 +99,20 @@ async function health(env: Env): Promise<Response> {
       cron: "1 minute backup on official draw dates; opportunistic API refresh for shorter intervals",
     },
   });
+}
+
+async function tryRefresh(env: Env, drawDate: string): Promise<string | null> {
+  try {
+    await refreshIfNeeded(env, drawDate);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : "Automatic refresh failed";
+  }
+}
+
+function withRefreshError(envelope: ApiResultEnvelope, refreshError: string | null): ApiResultEnvelope {
+  envelope.refresh_error = refreshError;
+  return envelope;
 }
 
 async function audit(env: Env, drawDate: string): Promise<Response> {

@@ -42,7 +42,13 @@ void loadHealth();
 async function loadHealth() {
   try {
     const data = await fetchJson("/v1/health", false);
-    setConnection("ok", data.ok ? "API online" : "API degraded");
+    const schema = data.schema || data.worker_policy?.schema;
+    if (schema?.status && schema.status !== "ok") {
+      setConnection("bad", "Schema migration needed");
+      logEvent(`${schema.status}: ${schema.message}`);
+    } else {
+      setConnection("ok", data.ok ? "API online" : "API degraded");
+    }
     el.summary.textContent = `${data.service} | ${data.runtime} | database ${data.database}`;
   } catch (error) {
     setConnection("bad", "Health failed");
@@ -81,10 +87,11 @@ async function fetchJson(path, auth) {
 function renderResult(result) {
   const total = result.categories.reduce((sum, category) => sum + category.received_count, 0);
   const expected = result.categories.reduce((sum, category) => sum + category.expected_count, 0);
-  const revisionChanged = result.draw_date !== state.lastDrawDate || result.revision !== state.lastRevision;
+  const revision = result.revision ?? 0;
+  const revisionChanged = result.draw_date !== state.lastDrawDate || revision !== state.lastRevision;
 
   el.drawStatus.textContent = result.status;
-  el.revision.textContent = String(result.revision);
+  el.revision.textContent = String(revision);
   el.rowCount.textContent = `${total}/${expected}`;
   el.lastPoll.textContent = result.last_poll_at ? new Date(result.last_poll_at).toLocaleTimeString() : "-";
   el.primaryProvider.textContent = result.primary_provider || "sanook";
@@ -94,10 +101,11 @@ function renderResult(result) {
   renderCategories(result.categories || []);
 
   if (revisionChanged) {
-    logEvent(`${result.draw_date || "no-date"} revision ${result.revision}: ${result.status}, ${total}/${expected} rows`);
-    state.lastRevision = result.revision;
+    logEvent(`${result.draw_date || "no-date"} revision ${revision}: ${result.status}, ${total}/${expected} rows`);
+    state.lastRevision = revision;
     state.lastDrawDate = result.draw_date;
   }
+  if (result.refresh_error) logEvent(`refresh warning: ${result.refresh_error}`);
 }
 
 function renderProviders(providers) {

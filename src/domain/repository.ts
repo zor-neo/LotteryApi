@@ -32,6 +32,7 @@ export interface ApiResultEnvelope {
   status: DrawStatus | "not_found";
   revision: number;
   last_poll_at: string | null;
+  refresh_error?: string | null;
   primary_provider: ProviderName;
   confidence: {
     first_provider: ProviderName | null;
@@ -50,6 +51,19 @@ export interface ApiResultEnvelope {
     message: string | null;
   }>;
   updated_at: string | null;
+}
+
+export interface SchemaReadiness {
+  status: "ok" | "needs_migration" | "error";
+  missing: string[];
+  checks: {
+    draws_revision: boolean;
+    draws_last_poll_at: boolean;
+    result_rows_status: boolean;
+    provider_attempt_rows: boolean;
+    draw_status_live: boolean;
+  };
+  message: string;
 }
 
 export async function getPollingConfig(env: Env): Promise<PollingConfig> {
@@ -75,6 +89,62 @@ export async function findApiKey(env: Env, apiKey: string) {
   );
   if (row) await query(env, "UPDATE api_keys SET last_used_at = now() WHERE id = $1", [row.id]);
   return row;
+}
+
+export async function getSchemaReadiness(env: Env): Promise<SchemaReadiness> {
+  try {
+    const columnRows = await query<{ table_name: string; column_name: string }>(
+      env,
+      `SELECT table_name, column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND ((table_name = 'draws' AND column_name IN ('revision', 'last_poll_at'))
+           OR (table_name = 'result_rows' AND column_name = 'status'))`,
+    );
+    const tableRows = await query<{ exists: boolean }>(env, "SELECT to_regclass('public.provider_attempt_rows') IS NOT NULL AS exists");
+    const enumRows = await query<{ enumlabel: string }>(
+      env,
+      `SELECT e.enumlabel
+       FROM pg_enum e
+       JOIN pg_type t ON t.oid = e.enumtypid
+       WHERE t.typname = 'draw_status'
+         AND e.enumlabel = 'live'`,
+    );
+
+    const columnSet = new Set(columnRows.map((row) => `${row.table_name}.${row.column_name}`));
+    const checks = {
+      draws_revision: columnSet.has("draws.revision"),
+      draws_last_poll_at: columnSet.has("draws.last_poll_at"),
+      result_rows_status: columnSet.has("result_rows.status"),
+      provider_attempt_rows: tableRows[0]?.exists === true,
+      draw_status_live: enumRows.some((row) => row.enumlabel === "live"),
+    };
+    const missing = Object.entries(checks)
+      .filter(([, present]) => !present)
+      .map(([name]) => name);
+
+    return {
+      status: missing.length ? "needs_migration" : "ok",
+      missing,
+      checks,
+      message: missing.length
+        ? "Apply migrations/current-neon-schema.sql to Neon before draw-day polling."
+        : "Database schema is ready for live draw-day polling.",
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      missing: ["schema_check_failed"],
+      checks: {
+        draws_revision: false,
+        draws_last_poll_at: false,
+        result_rows_status: false,
+        provider_attempt_rows: false,
+        draw_status_live: false,
+      },
+      message: error instanceof Error ? error.message : "Schema readiness check failed",
+    };
+  }
 }
 
 export async function ensureDraw(env: Env, drawDate: string): Promise<DrawRecord> {
@@ -277,6 +347,7 @@ export async function buildResultEnvelope(env: Env, draw: DrawRecord | null): Pr
       status: "not_found",
       revision: 0,
       last_poll_at: null,
+      refresh_error: null,
       primary_provider: "sanook",
       confidence: {
         first_provider: null,
@@ -341,8 +412,9 @@ export async function buildResultEnvelope(env: Env, draw: DrawRecord | null): Pr
     draw_date: dateOnly(draw.draw_date),
     timezone: config.timezone,
     status: draw.status,
-    revision: draw.revision,
-    last_poll_at: draw.last_poll_at,
+    revision: draw.revision ?? 0,
+    last_poll_at: draw.last_poll_at ?? null,
+    refresh_error: null,
     primary_provider: "sanook",
     confidence: {
       first_provider: draw.first_provider,
