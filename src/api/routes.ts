@@ -66,13 +66,17 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
     const now = getBangkokParts();
     const drawDate = body.draw_date || now.date;
     if (!drawDatePattern.test(drawDate)) return error(400, "draw_date must be YYYY-MM-DD");
-    return json(await runPoll(env, {
-      drawDate,
-      hhmm: body.hhmm || now.hhmm,
-      hhmmss: body.hhmmss || now.hhmmss,
-      source: path.endsWith("dry-run") ? "dry_run" : "manual",
-      dryRun: path.endsWith("dry-run"),
-    }));
+    try {
+      return json(await runPoll(env, {
+        drawDate,
+        hhmm: body.hhmm || now.hhmm,
+        hhmmss: body.hhmmss || now.hhmmss,
+        source: path.endsWith("dry-run") ? "dry_run" : "manual",
+        dryRun: path.endsWith("dry-run"),
+      }));
+    } catch (err) {
+      return error(500, err instanceof Error ? err.message : "Poll run failed");
+    }
   }
 
   return error(404, "Not found");

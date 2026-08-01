@@ -10,11 +10,12 @@ import {
   enqueueWebhook,
   ensureDraw,
   getDraw,
+  getLatestProviderSnapshot,
   getPollingConfig,
   insertProviderAttempt,
   replaceProviderAttemptRows,
   updateDrawState,
-  upsertResultRow,
+  upsertResultRows,
 } from "./repository.js";
 
 export interface PollOptions {
@@ -101,12 +102,27 @@ async function runLockedPoll(
       await replaceProviderAttemptRows(env, attemptId, draw.id, attempt);
     }
 
-    const liveDecision = evaluateLiveResult(attempts, consensusThreshold, drawDate);
-    let changedRows = 0;
-    for (const rowDecision of liveDecision.rows) {
-      const changed = await upsertResultRow(env, draw.id, rowDecision.row, "sanook", rowDecision.seenProviders, rowDecision.status);
-      if (changed) changedRows += 1;
+    let liveDecision = evaluateLiveResult(attempts, consensusThreshold, drawDate);
+    if (liveDecision.rows.length === 0) {
+      const latestSanook = await getLatestProviderSnapshot(env, draw.id, "sanook");
+      if (latestSanook?.rows.length) {
+        liveDecision = evaluateLiveResult(
+          [latestSanook, ...attempts.filter((attempt) => attempt.provider !== "sanook")],
+          consensusThreshold,
+          drawDate,
+        );
+      }
     }
+    const changedRows = await upsertResultRows(
+      env,
+      draw.id,
+      liveDecision.rows.map((rowDecision) => ({
+        row: rowDecision.row,
+        provider: "sanook",
+        providers: rowDecision.seenProviders,
+        status: rowDecision.status,
+      })),
+    );
 
     const liveStateChanged = liveDecision.status !== "pending" && draw.status !== liveDecision.status;
     let updatedDraw = draw;

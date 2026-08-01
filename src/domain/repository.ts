@@ -239,18 +239,76 @@ export async function insertProviderAttempt(
   return row.id;
 }
 
+export async function getLatestProviderSnapshot(
+  env: Env,
+  drawId: string,
+  provider: ProviderName,
+): Promise<ProviderParseResult | null> {
+  const attempt = await one<{
+    id: string;
+    source_url: string;
+    http_status: number | null;
+    source_date: string | Date | null;
+    row_count: number;
+    is_complete: boolean;
+    result_signature: string | null;
+    message: string;
+    duration_ms: number;
+    raw_hash: string | null;
+  }>(
+    env,
+    `SELECT id, source_url, http_status, source_date, row_count, is_complete,
+            result_signature, message, duration_ms, raw_hash
+     FROM provider_attempts
+     WHERE draw_id = $1 AND provider = $2
+     ORDER BY checked_at DESC
+     LIMIT 1`,
+    [drawId, provider],
+  );
+
+  if (!attempt) return null;
+
+  const rows = await query<CanonicalResultRow>(
+    env,
+    `SELECT prize_category, label, prize_amount, winning_number
+     FROM provider_attempt_rows
+     WHERE provider_attempt_id = $1
+     ORDER BY prize_category, winning_number`,
+    [attempt.id],
+  );
+
+  return {
+    provider,
+    sourceUrl: attempt.source_url,
+    httpStatus: attempt.http_status,
+    sourceDate: dateOnly(attempt.source_date),
+    rows,
+    isComplete: attempt.is_complete,
+    message: attempt.message,
+    durationMs: attempt.duration_ms,
+    rawHash: attempt.raw_hash,
+    resultSignature: attempt.result_signature,
+  };
+}
+
 export async function replaceProviderAttemptRows(env: Env, providerAttemptId: string, drawId: string, attempt: ProviderParseResult) {
   await query(env, "DELETE FROM provider_attempt_rows WHERE provider_attempt_id = $1", [providerAttemptId]);
-  for (const row of attempt.rows) {
-    await query(
-      env,
-      `INSERT INTO provider_attempt_rows
-        (provider_attempt_id, draw_id, provider, prize_category, label, prize_amount, winning_number)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (provider_attempt_id, prize_category, winning_number) DO NOTHING`,
-      [providerAttemptId, drawId, attempt.provider, row.prize_category, row.label, row.prize_amount, row.winning_number],
-    );
-  }
+  if (attempt.rows.length === 0) return;
+
+  await query(
+    env,
+    `INSERT INTO provider_attempt_rows
+      (provider_attempt_id, draw_id, provider, prize_category, label, prize_amount, winning_number)
+     SELECT $1, $2, $3, payload.prize_category, payload.label, payload.prize_amount, payload.winning_number
+     FROM jsonb_to_recordset($4::jsonb) AS payload(
+       prize_category text,
+       label text,
+       prize_amount integer,
+       winning_number text
+     )
+     ON CONFLICT (provider_attempt_id, prize_category, winning_number) DO NOTHING`,
+    [providerAttemptId, drawId, attempt.provider, JSON.stringify(attempt.rows)],
+  );
 }
 
 export async function upsertResultRow(
@@ -265,7 +323,7 @@ export async function upsertResultRow(
     env,
     `INSERT INTO result_rows
       (draw_id, prize_category, label, prize_amount, winning_number, source_provider, all_seen_providers, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8)
      ON CONFLICT (draw_id, prize_category, winning_number) DO UPDATE SET
        label = excluded.label,
        prize_amount = excluded.prize_amount,
@@ -279,9 +337,71 @@ export async function upsertResultRow(
         OR result_rows.label IS DISTINCT FROM excluded.label
         OR result_rows.prize_amount IS DISTINCT FROM excluded.prize_amount
      RETURNING id`,
-    [drawId, row.prize_category, row.label, row.prize_amount, row.winning_number, provider, providers, status],
+    [drawId, row.prize_category, row.label, row.prize_amount, row.winning_number, provider, pgTextArray(providers), status],
   );
   return result.length > 0;
+}
+
+export async function upsertResultRows(
+  env: Env,
+  drawId: string,
+  rows: Array<{
+    row: CanonicalResultRow;
+    provider: ProviderName;
+    providers: ProviderName[];
+    status: DrawStatus;
+  }>,
+): Promise<number> {
+  if (rows.length === 0) return 0;
+
+  const payload = rows.map((item) => ({
+    prize_category: item.row.prize_category,
+    label: item.row.label,
+    prize_amount: item.row.prize_amount,
+    winning_number: item.row.winning_number,
+    source_provider: item.provider,
+    all_seen_providers: item.providers,
+    status: item.status,
+  }));
+
+  const changed = await query<{ id: string }>(
+    env,
+    `INSERT INTO result_rows
+      (draw_id, prize_category, label, prize_amount, winning_number, source_provider, all_seen_providers, status)
+     SELECT $1,
+            payload.prize_category,
+            payload.label,
+            payload.prize_amount,
+            payload.winning_number,
+            payload.source_provider,
+            ARRAY(SELECT jsonb_array_elements_text(payload.all_seen_providers)),
+            payload.status::draw_status
+     FROM jsonb_to_recordset($2::jsonb) AS payload(
+       prize_category text,
+       label text,
+       prize_amount integer,
+       winning_number text,
+       source_provider text,
+       all_seen_providers jsonb,
+       status text
+     )
+     ON CONFLICT (draw_id, prize_category, winning_number) DO UPDATE SET
+       label = excluded.label,
+       prize_amount = excluded.prize_amount,
+       source_provider = excluded.source_provider,
+       all_seen_providers = excluded.all_seen_providers,
+       status = excluded.status,
+       updated_at = now()
+     WHERE result_rows.all_seen_providers IS DISTINCT FROM excluded.all_seen_providers
+        OR result_rows.status IS DISTINCT FROM excluded.status
+        OR result_rows.source_provider IS DISTINCT FROM excluded.source_provider
+        OR result_rows.label IS DISTINCT FROM excluded.label
+        OR result_rows.prize_amount IS DISTINCT FROM excluded.prize_amount
+     RETURNING id`,
+    [drawId, JSON.stringify(payload)],
+  );
+
+  return changed.length;
 }
 
 export async function bumpDrawRevision(env: Env, drawId: string): Promise<DrawRecord> {
@@ -305,7 +425,7 @@ export async function updateDrawState(
     `UPDATE draws
      SET status = $2::draw_status,
          first_provider = COALESCE($3, first_provider),
-         confirmed_providers = $4,
+         confirmed_providers = $4::text[],
          latest_signature = COALESCE($5, latest_signature),
          conflict_message = $6,
          last_poll_at = CASE WHEN $7 THEN now() ELSE last_poll_at END,
@@ -318,7 +438,7 @@ export async function updateDrawState(
          failed_at = CASE WHEN $2::draw_status = 'failed'::draw_status THEN now() ELSE failed_at END,
          updated_at = now()
      WHERE id = $1`,
-    [drawId, status, firstProvider, confirmingProviders, signature, conflictMessage, touchPoll],
+    [drawId, status, firstProvider, pgTextArray(confirmingProviders), signature, conflictMessage, touchPoll],
   );
 }
 
@@ -455,4 +575,8 @@ function dateOnly(value: string | Date | null | undefined): string | null {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function pgTextArray(values: string[]): string {
+  return `{${values.map((value) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",")}}`;
 }
